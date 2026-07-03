@@ -30,6 +30,8 @@ var ballSize = 10;
 var playerAuths = {};              // {playerId: auth}
 var sizeChangeEnabled = true;      // Admin olmayanların !size [değer] komutunu kullanabilmesi
 
+var otoMode = "kapa";              // "kapa" | "red" | "blue" | "mix" - otomatik takım ataması
+
 // ============================================
 // YARDIMCI FONKSİYONLAR
 // ============================================
@@ -68,6 +70,11 @@ function ensureOwnerAdmin() {
 // !size all [değer]       -> sadece admin, herkesin boyutu (sınırsız)
 // !size red/blue [değer]  -> sadece admin, takım boyutu (sınırsız)
 // !size top [değer]       -> sadece admin, top boyutu (sınırsız)
+//
+// NOT: Admin toplu boyut değişikliği yaptığında (!size all / red / blue / top / id)
+// başka oyunculara HİÇBİR bildirim gitmez; sadece komutu yazan admin sessiz bir
+// onay görür. Oyuncu kendi boyutunu (!size [değer]) değiştirdiğinde ise ona,
+// sadece kendisine, bildirim/ses olmadan sohbet (chat) satırında bir onay yazılır.
 function changeSize(player, message) {
     var parts = message.trim().split(" ");
 
@@ -83,7 +90,8 @@ function changeSize(player, message) {
     // ---- ADMİN YETKİLİ KOMUTLAR ----
     if (admin && parts.length === 2 && (target === "aç" || target === "ac")) {
         sizeChangeEnabled = true;
-        room.sendAnnouncement("🔓 Boyut değiştirme (!size) herkes için açıldı!", null, 0x66ff00, "bold", 2);
+        // Herkes için açıldığından, herkesin nasıl kullanacağını görmesi gerekiyor.
+        room.sendAnnouncement("🔓 Boyut değiştirme açıldı! Kullanmak için yaz: !size [değer] (" + MIN_SIZE + "-" + MAX_SIZE + ")", null, 0x66ff00, "bold", 2);
         return;
     }
 
@@ -101,7 +109,8 @@ function changeSize(player, message) {
         }
         ballSize = size;
         room.setDiscProperties(0, {radius: size});
-        room.sendAnnouncement("⚽ Top boyutu güncellendi: " + size, null, 0xFFFF00, "bold", 2);
+        // Diğer oyunculara bildirim gitmesin, sadece admine sessiz onay.
+        room.sendChat("⚽ Top boyutu güncellendi: " + size, player.id);
         return;
     }
 
@@ -123,7 +132,8 @@ function changeSize(player, message) {
                 room.setPlayerDiscProperties(allPlayers[i].id, {radius: size});
             }
         }
-        room.sendAnnouncement("👥 Tüm oyuncuların boyutu güncellendi: " + size, null, 0x66ff00, "bold", 2);
+        // Diğer oyunculara bildirim gitmesin, sadece admine sessiz onay.
+        room.sendChat("👥 Tüm oyuncuların boyutu güncellendi: " + size, player.id);
         return;
     }
 
@@ -142,9 +152,9 @@ function changeSize(player, message) {
                 playerSizes[allPlayers[i].id] = size;
             }
         }
-        var color = team === 1 ? 0xFF0000 : 0x0000FF;
         var teamName = team === 1 ? "Kırmızı" : "Mavi";
-        room.sendAnnouncement("⚽ " + teamName + " takım boyutu güncellendi: " + size, null, color, "bold", 2);
+        // Diğer oyunculara bildirim gitmesin, sadece admine sessiz onay.
+        room.sendChat("⚽ " + teamName + " takım boyutu güncellendi: " + size, player.id);
         return;
     }
 
@@ -162,7 +172,8 @@ function changeSize(player, message) {
         }
         room.setPlayerDiscProperties(targetId, {radius: size});
         playerSizes[targetId] = size;
-        room.sendAnnouncement("✅ " + targetPlayer.name + " boyutu " + size + " olarak değiştirildi!", player.id, 0x66ff00, "bold", 1);
+        // Diğer oyunculara bildirim gitmesin, sadece admine sessiz onay.
+        room.sendChat("✅ " + targetPlayer.name + " boyutu " + size + " olarak değiştirildi!", player.id);
         return;
     }
 
@@ -184,7 +195,8 @@ function changeSize(player, message) {
         }
         room.setPlayerDiscProperties(player.id, {radius: clamped});
         playerSizes[player.id] = clamped;
-        room.sendAnnouncement("✅ Boyutunuz değiştirildi: " + clamped, player.id, 0x66ff00, "bold", 1);
+        // Kendi boyutunu değiştirdiğinde: bildirim/ses YOK, sadece kendisine chat satırı.
+        room.sendChat("✅ Boyutunuz değiştirildi: " + clamped, player.id);
         return;
     }
 
@@ -197,6 +209,71 @@ function reapplyAllSizes() {
         room.setPlayerDiscProperties(parseInt(playerId), {radius: playerSizes[playerId]});
     }
     room.setDiscProperties(0, {radius: ballSize});
+}
+
+// ============================================
+// OTOMATİK TAKIM ATAMA SİSTEMİ (!oto)
+// ============================================
+
+// !oto red   -> sadece admin, odaya katılan herkes otomatik olarak Kırmızı takıma alınır
+// !oto blue  -> sadece admin, odaya katılan herkes otomatik olarak Mavi takıma alınır
+// !oto mix   -> sadece admin, odaya katılan herkes takımları eşitleyecek şekilde
+//               (az olan takıma) otomatik olarak alınır
+// !oto kapa  -> sadece admin, otomatik takım atamasını kapatır
+function otoCommand(player, message) {
+    if (!isAdmin(player)) {
+        room.sendAnnouncement("⚠️ Bu komutu sadece adminler kullanabilir!", player.id, 0xff2400, "bold", 1);
+        return;
+    }
+
+    var parts = message.trim().split(" ");
+    if (parts.length !== 2) {
+        room.sendAnnouncement("Kullanım: !oto red / blue / mix / kapa", player.id, 0xFFFF00, "bold", 1);
+        return;
+    }
+
+    var mode = parts[1].toLowerCase();
+    if (mode !== "red" && mode !== "blue" && mode !== "mix" && mode !== "kapa") {
+        room.sendAnnouncement("⚠️ Geçersiz mod! (red / blue / mix / kapa)", player.id, 0xff2400, "bold", 1);
+        return;
+    }
+
+    otoMode = mode;
+
+    // Bu, tüm odayı etkileyen bir mod olduğu için (o andan sonra katılan herkese
+    // uygulanacağı için) tüm odaya bilgi veriyoruz.
+    if (mode === "kapa") {
+        room.sendAnnouncement("🔴 Otomatik takım ataması kapatıldı!", null, 0xff2400, "bold", 2);
+    } else if (mode === "red") {
+        room.sendAnnouncement("🔴 Otomatik takım ataması: Katılanlar Kırmızı takıma alınacak!", null, 0xFF0000, "bold", 2);
+    } else if (mode === "blue") {
+        room.sendAnnouncement("🔵 Otomatik takım ataması: Katılanlar Mavi takıma alınacak!", null, 0x0000FF, "bold", 2);
+    } else if (mode === "mix") {
+        room.sendAnnouncement("🔀 Otomatik takım ataması: Katılanlar takımları eşitleyecek şekilde alınacak!", null, 0xFFA500, "bold", 2);
+    }
+}
+
+// Yeni katılan oyuncuya, aktif oto moduna göre takım ata
+function applyOtoTeam(playerId) {
+    if (otoMode === "kapa") return;
+
+    var p = room.getPlayer(playerId);
+    if (!p) return;
+
+    if (otoMode === "red") {
+        room.setPlayerTeam(playerId, 1);
+    } else if (otoMode === "blue") {
+        room.setPlayerTeam(playerId, 2);
+    } else if (otoMode === "mix") {
+        var players = room.getPlayerList();
+        var redCount = 0, blueCount = 0;
+        for (var i = 0; i < players.length; i++) {
+            if (players[i].team === 1) redCount++;
+            else if (players[i].team === 2) blueCount++;
+        }
+        var team = redCount <= blueCount ? 1 : 2;
+        room.setPlayerTeam(playerId, team);
+    }
 }
 
 // ============================================
@@ -214,6 +291,7 @@ function helpFun(player) {
         room.sendAnnouncement("!size all [değer] - Tüm oyuncuların boyutunu değiştir", player.id, 0x74F9FF, "normal", 1);
         room.sendAnnouncement("!size red/blue [değer] - Takım boyutunu değiştir", player.id, 0x74F9FF, "normal", 1);
         room.sendAnnouncement("!size top [değer] - Top boyutunu değiştir", player.id, 0x74F9FF, "normal", 1);
+        room.sendAnnouncement("!oto red/blue/mix/kapa - Otomatik takım atamasını yönet", player.id, 0x74F9FF, "normal", 1);
     }
 
     room.sendAnnouncement("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", player.id, 0xFFFF00, "bold", 2);
@@ -221,7 +299,8 @@ function helpFun(player) {
 
 var commands = {
     "!komutlar": helpFun,
-    "!size": changeSize
+    "!size": changeSize,
+    "!oto": otoCommand
 };
 
 // ============================================
@@ -249,17 +328,12 @@ room.onPlayerJoin = function(player) {
     // yazıldıktan sonra katılan biri de 15 değil, 10 ile başlar.
     ensureOwnerAdmin();
 
-    room.sendAnnouncement("👋 " + player.name + " odaya katıldı!", null, 0xFFD700, "bold", 2);
-
-    // Yeni gelen oyuncuya komutları göster
+    // Otomatik takım ataması (!oto) aktifse, katılan oyuncuyu ilgili takıma al.
     setTimeout(function() {
-        var stillThere = room.getPlayer(player.id);
-        if (!stillThere) return;
-        room.sendAnnouncement("━━━━━━ 🎮 HOŞ GELDİN 🎮 ━━━━━━", player.id, 0x00FF00, "bold", 2);
-        room.sendAnnouncement("!size [değer] yazarak kendi boyutunu ayarlayabilirsin (" + MIN_SIZE + "-" + MAX_SIZE + ")", player.id, 0xFFFFFF, "normal", 1);
-        room.sendAnnouncement("Tüm komutlar için: !komutlar", player.id, 0xFFFFFF, "normal", 1);
-        room.sendAnnouncement("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", player.id, 0x00FF00, "bold", 2);
-    }, 1000);
+        applyOtoTeam(player.id);
+    }, 200);
+
+    // Hoşgeldin / fazlalık bildirimleri kaldırıldı (istek üzerine).
 };
 
 room.onPlayerLeave = function(player) {
