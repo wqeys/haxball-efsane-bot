@@ -1,6 +1,6 @@
 // Haxball Headless Host için - www.haxball.com/headless
 var room = HBInit({
-    roomName: "QATAR V5 AMA İSTEDİĞİN BOYUTDA",
+    roomName: "ODA İSMİNİ GİR",
     maxPlayers: 19,
     public: true,
     noPlayer: true,
@@ -111,12 +111,17 @@ function changeSize(player, message) {
             room.sendAnnouncement("⚠️ Geçersiz boyut değeri!", player.id, 0xff2400, "bold", 1);
             return;
         }
+        // teamSizes güncelle — bundan sonra katılacaklar da bu değeri alır
         teamSizes.red = size;
         teamSizes.blue = size;
         var allPlayers = room.getPlayerList();
         for (var i = 0; i < allPlayers.length; i++) {
-            room.setPlayerDiscProperties(allPlayers[i].id, {radius: size});
+            // Spectator dahil odadaki herkesin playerSizes kaydını güncelle
             playerSizes[allPlayers[i].id] = size;
+            // Disc sadece takımdaki oyuncular için geçerli (spectator disc'i yok)
+            if (allPlayers[i].team !== 0) {
+                room.setPlayerDiscProperties(allPlayers[i].id, {radius: size});
+            }
         }
         room.sendAnnouncement("👥 Tüm oyuncuların boyutu güncellendi: " + size, null, 0x66ff00, "bold", 2);
         return;
@@ -238,7 +243,10 @@ room.onPlayerChat = function(player, message) {
 
 room.onPlayerJoin = function(player) {
     playerAuths[player.id] = player.auth;
-    playerSizes[player.id] = DEFAULT_SIZE;
+    // Not: playerSizes burada BİLİNÇLİ olarak atanmıyor. Oyuncu bir takıma
+    // katıldığında onPlayerTeamChange, en son ayarlanan !size all / red / blue
+    // değerini (teamSizes) otomatik olarak uygular. Böylece "!size all 10"
+    // yazıldıktan sonra katılan biri de 15 değil, 10 ile başlar.
     ensureOwnerAdmin();
 
     room.sendAnnouncement("👋 " + player.name + " odaya katıldı!", null, 0xFFD700, "bold", 2);
@@ -261,17 +269,25 @@ room.onPlayerLeave = function(player) {
 };
 
 room.onPlayerTeamChange = function(changedPlayer) {
-    // Takım değiştirince, oyuncunun kendi ayarladığı boyutu koru; yoksa takım varsayılanını ata
+    // changedPlayer.team event anında eski takımı gösterebilir.
+    // room.getPlayer() ile güncel takım bilgisini alıyoruz.
+    var playerId = changedPlayer.id;
     setTimeout(function() {
-        var targetSize = playerSizes[changedPlayer.id];
+        var p = room.getPlayer(playerId);
+        if (!p) return;
+
+        // Oyuncunun daha önce kendisi ayarladığı özel bir boyutu varsa onu koru.
+        // Yoksa o anki takımın en son ayarlanan boyutunu (teamSizes) kullan.
+        var targetSize = playerSizes[playerId];
         if (targetSize === undefined) {
-            targetSize = changedPlayer.team === 1 ? teamSizes.red
-                       : changedPlayer.team === 2 ? teamSizes.blue
-                       : DEFAULT_SIZE;
+            if (p.team === 1)      targetSize = teamSizes.red;
+            else if (p.team === 2) targetSize = teamSizes.blue;
+            else                   targetSize = DEFAULT_SIZE;
         }
-        room.setPlayerDiscProperties(changedPlayer.id, {radius: targetSize});
-        playerSizes[changedPlayer.id] = targetSize;
-    }, 50);
+
+        room.setPlayerDiscProperties(playerId, {radius: targetSize});
+        playerSizes[playerId] = targetSize;
+    }, 100);
 };
 
 room.onPositionsReset = function() {
